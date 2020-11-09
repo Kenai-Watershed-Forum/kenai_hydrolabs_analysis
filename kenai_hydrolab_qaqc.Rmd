@@ -1,0 +1,553 @@
+---
+title: "Kenai Watershed Forum Hydrolab Sonde Data"
+author: "bemeyer@alaska.edu"
+date: "`r Sys.time()`"
+output:
+  html_document: 
+    df_print: paged
+    fig_width: 10
+    fig_height: 6
+    fig_caption: yes
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+Website last updated `r Sys.time()` by Benjamin Meyer (benjamin.meyer.ak@gmail.com)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+<br>
+
+```{r initialize script, include=FALSE}
+
+# clear environment
+rm(list=ls())
+
+#require packages
+library(googlesheets)
+library(tidyverse)
+library(hms)
+library(janitor)
+library(lubridate)
+library(DT)
+library(readxl)
+
+# spatial packages
+library(leaflet)
+library(sp)
+library(rgeos)
+library(maps)
+
+# specify local directory where files will be accessed from
+# list local directory for upload (repace "dir" with your local directory after downloading files from KNB)
+dir <- "/Users/bmeyer/Google Drive/UAF Semesters/Thesis/EPSCoR SCTC/KWF_Hydrolab/"
+
+```
+
+
+### Summary:
+Throughout the summer seasons of 2015 and 2016, the Kenai Watershed Forum (https://kenaiwatershed.org/) collected continuous water quality data in three tributaries of the Kenai River: Beaver Creek, Russian River, and Ptarmigan Creek.  Water quality parameters included:
+
+- Temperature
+- Turbidity
+- pH
+- Dissolved oxygen
+- Salinity
+- Conductivity
+
+The three tributaries represent a lowland-to-glacial spectrum of watershed types, and exhibit distinct patterns in water quality parameters. 
+
+2015 data was uploaded to the EPSCoR online data repository at https://catalog.epscor.alaska.edu/dataset/2015-kenai-waterhsed-water-quality-data by Kenai Watershed Forum scientist Jeff Wells.  2015 data at this repository has been QA/QC'd by Jeff Wells.
+
+The data presented in this document, which include both 2015 and 2016 data, began with original download files from Hydrolab sondes deployed in summers 2015 and 2016 and employs R code for quality assurance, visualization, and summary.  See Methods section for further details.
+
+QA/QC Methods Summary:
+
+* a.) Visualize original datasets by individual logger, year, and parameter.  Excise visually erroneous data by manually identified date range.
+* b.) Average simultaneous values at each site and year when loggers were deployed side-by-side.
+* c.) Plot
+* d.) Upload data to public repository at NCEAS Knowledge Network for Biocomplexity (https://knb.ecoinformatics.org/)
+
+***
+
+<br>
+
+### Study Locations
+```{r, out.width = '75%', out.height='75%'}
+# make dataframe of coordinates of Hydrolab sites
+site <- c("Russian River","Beaver Creek","Ptarmigan Creek")
+latitude <- c(60.453,60.5603,60.404833)
+longitude <- c(-149.98677,-151.12577,-149.36232)
+coords <- data.frame(site,latitude,longitude)
+
+# create map
+leaflet(data = coords) %>%
+  addTiles() %>%  # Add default OpenStreetMap map tiles
+  #fitBounds(-150, 60.04,-149.0, 60.02) %>%
+  setView(-150.210169, 60.487694, zoom = 8) %>%
+  addMarkers(~longitude, ~latitude, popup = ~as.character(site), label = ~as.character(site))
+
+```
+
+Sondes were deployed at established sites in the lower reaches of Beaver Creek, Russian River, and Ptarmigan Creek.
+
+***
+
+<br>
+
+### Data upload and preparation
+
+Upload files from local directory and prepare data for visualization
+```{r}
+
+#Import all Beaver Creek files
+# run read-in function on files in beaver creek directory
+bc_data <-list.files(path = , "data/BeaverCreek/Hydrolab_Beaver/",
+               pattern = "*.csv", 
+               full.names = T) %>% 
+    map_df(~read_csv(., col_types = cols(.default = "c"), skip = 13)) %>%
+  filter(!is.na(Date),
+         Date != "MMDDYY") %>%
+  mutate(Watershed = "Beaver Creek")
+
+
+#Import all Russian River files
+# run read-in function on files in russian river directory
+rr_data <-list.files(path = "data/RussianRiver/Hydrolab_Russian/",
+               pattern = "*.csv", 
+               full.names = T) %>% 
+    map_df(~read_csv(., col_types = cols(.default = "c"), skip = 13)) %>%
+  filter(!is.na(Date),
+         Date != "MMDDYY") %>%
+  mutate(Watershed = "Russian River") %>%
+  select(-BP_1)
+
+# Import all Ptarmigan Creek files
+# run read-in function on files in ptarmigan creek directory
+pc_data <-list.files(path = "data/PtarmiganCreek/Hydrolab_Ptarmigan",
+               pattern = "*.csv", 
+               full.names = T) %>% 
+    map_df(~read_csv(., col_types = cols(.default = "c"), skip = 13)) %>%
+  filter(!is.na(Date),
+         Date != "MMDDYY") %>%
+  mutate(Watershed = "Ptarmigan Creek")
+
+
+# Combine data from Beaver Creek, Russian River, and Ptarmigan Creek
+# combine
+all_data <- bind_rows(bc_data,rr_data,pc_data)
+
+# remove individual watershed dataframes
+#rm(bc_data,rr_data,pc_data)
+
+# Final data frame cleaning steps
+# create DateTime column
+all_data <- all_data %>%
+  mutate(Date = as.character(as.Date(Date, "%m/%d/%y"))) %>%
+  mutate(DateTime = paste(Date,Time)) %>%
+  mutate(DateTime = strptime(DateTime, # Apply strptime with timezone
+                    format = "%Y-%m-%d %H:%M:%OS",
+                    tz = "America/Anchorage")) %>%
+  mutate(year = year(DateTime),
+         day = yday(DateTime)) %>%
+  # round all observations to nearest 0.25 hour interval
+  transform(DateTime = round_date(DateTime, "minute")) %>%
+  arrange(DateTime) %>%
+  # remove "Hydrolab MS5" term
+  separate(LoggerID, sep = " ", into = c("a","b","LoggerID")) %>%
+  select(-a,-b) 
+
+# clean up parameter names 
+all_data <- all_data %>%
+  rename(DO = "LDO.",
+         Turbidity = "TurbSC",
+         Conductivity = "SpCond") %>%
+  # remove unneeded parameters
+  select(-LDO,-IBatt)
+
+# make character vector of all unique logger IDs
+loggers <- unique(all_data$LoggerID)
+
+# prep for plotting
+all_data <- all_data %>%
+  select(-Date,-Time) %>%
+  transform(DateTime = as.POSIXct(DateTime)) %>%
+  gather(key = "Parameter", value = "value",Temp,pH,Sal,Turbidity,DO,Conductivity,DO,BP) %>%
+  filter(!is.na(value)) %>%
+  transform(value = as.numeric(value)) 
+
+```
+
+<br>
+
+***
+
+### Remove Erroneous Data
+
+Plot data series individually by sonde, parameter, and year; and visually identify and remove erroneous data.
+
+#### Temperature
+```{r}
+# temp
+all_data %>%
+  filter(Parameter == "Temp") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point(pch = 21) +
+  facet_grid(Watershed ~ year, scales = "free_y") +
+  ggtitle("Original Temperature Data")
+  
+```
+Note: temperature data was QC'd manually by deleting data from original files, rather than using code to excise by date range.  Decided to develop code to excise by date after  QCing this parameter.
+
+
+<br>
+
+#### pH
+```{r}
+# temp
+all_data %>%
+  filter(Parameter == "pH") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year) +
+  ggtitle("Original pH Data")
+
+# note: experimented with using a plotly object here to more easily ID erroneous data, but slowed down computer too much.
+
+```
+
+<br>
+
+Plot cleaned-up original pH data
+```{r}
+# read in data excise table
+excise_pH <- read_excel("other_inputs/KWF_Hydrolabs_ExciseData.xlsx", sheet = "pH") %>%
+  transform(LoggerID = as.character(LoggerID))
+
+# create table of observations to be removed
+excise_pH <- left_join(all_data,excise_pH,by=c("Watershed","Parameter","year","LoggerID")) %>%
+  filter(day >= day_start & day <= day_end)
+
+# remove manually identified observations from overall dataset
+all_data <- anti_join(all_data,excise_pH)
+
+# plot cleaned-up pH data
+all_data %>%
+  filter(Parameter == "pH") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point(size = 0.7) +
+  facet_grid(Watershed ~ year) +
+  ggtitle("Corrected Original pH Data")
+```
+
+<br>
+
+#### Turbidity
+
+Original Turbidity data
+```{r}
+# remove erroneous observations
+all_data <- all_data %>%
+  filter(value != "999999")
+
+# turbidity
+all_data %>%
+  filter(Parameter == "Turbidity") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year, scale = "free_y") +
+  ggtitle("Original Turbidity Data")
+
+```
+**Discussion on original turbidity observations:** Field turbidity observations are anticipated to exhibit occasional spikes much greater than those surrounding them.  If a debris particle happens blocking the sensor at the moment of observation, the sensor will be blocked and value will be erroneously high.
+
+Individual outlier observations, or occasional groups of outliers, are manually removed in this step of the QA/QC process, while more sustained events of elevated values are left in the dataset, as they may be due to natural causes such as sustained debris inflow.
+
+Note different y-axis scale for Beaver Creek watershed.
+
+<br>
+
+Excise erroneous original Turbidity data
+```{r}
+# read in data excise table
+excise_turb <- read_excel("other_inputs/KWF_Hydrolabs_ExciseData.xlsx", sheet = "Turbidity") %>%
+  transform(LoggerID = as.character(LoggerID))
+
+# create table of observations to be removed
+excise_turb <- left_join(all_data,excise_turb,by=c("Watershed","Parameter","year","LoggerID")) %>%
+  filter(day >= day_start & day <= day_end)
+
+# remove manually identified observations from overall dataset
+all_data <- anti_join(all_data,excise_turb)
+
+# plot cleaned-up turbidity data
+all_data %>%
+  filter(Parameter == "Turbidity") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year, scale = "free_y") +
+  ggtitle("Corrected Original Turbidity Data")
+
+```
+
+<br>
+
+#### Dissolved Oxygen
+
+Original dissolved oxygen data
+```{r}
+# DO
+all_data %>%
+  filter(Parameter == "DO") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year) +
+  ggtitle("Original Dissolved Oxygen Data")
+
+```
+
+<br>
+
+Excise erroneous original DO data
+```{r}
+# read in data excise table
+excise_do <- read_excel("other_inputs/KWF_Hydrolabs_ExciseData.xlsx", sheet = "DO") %>%
+  transform(LoggerID = as.character(LoggerID))
+
+# create table of observations to be removed
+excise_do <- left_join(all_data,excise_do,by=c("Watershed","Parameter","year","LoggerID")) %>%
+  filter(day >= day_start & day <= day_end)
+
+# remove manually identified observations from overall dataset
+all_data <- anti_join(all_data,excise_do)
+
+# plot cleaned-up DO data
+all_data %>%
+  filter(Parameter == "DO") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year, scale = "free_y") +
+  ggtitle("Corrected Original DO Data")
+```
+<br>
+
+#### Conductivity
+
+Original conductivity data
+```{r}
+# DO
+all_data %>%
+  filter(Parameter == "Conductivity") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year) +
+  ggtitle("Original Conductivity Data")
+
+```
+<br>
+
+Excise erroneous original conductivity data
+```{r}
+# read in data excise table
+excise_cond <- read_excel("other_inputs/KWF_Hydrolabs_ExciseData.xlsx", sheet = "Conductivity") %>%
+  transform(LoggerID = as.character(LoggerID))
+
+# create table of observations to be removed
+excise_cond <- left_join(all_data,excise_cond,by=c("Watershed","Parameter","year","LoggerID")) %>%
+  filter(day >= day_start & day <= day_end)
+
+# remove manually identified observations from overall dataset
+all_data <- anti_join(all_data,excise_cond)
+
+```
+
+
+
+```{r}
+# plot cleaned-up DO data
+all_data %>%
+  filter(Parameter == "Conductivity") %>%
+  ggplot(aes(day,value, color = LoggerID), fill = as.factor(Watershed)) +
+  geom_point() +
+  facet_grid(Watershed ~ year, scale = "free_y") +
+  ggtitle("Corrected Original Conductivity Data")
+```
+
+<br>
+
+Note: barometric pressure and salinity were also measured; and will not be further considered here.
+```{r}
+all_data <- all_data %>%
+  filter(Parameter != "Sal",
+         Parameter != "BP")
+```
+
+
+***
+
+### Finalize data
+
+Now that we have removed erroneous observations from individual logger time series, we can average values between side-by-side loggers to get final values for temperature, turbidity, dissolved oxygen, and conductivity.
+
+```{r}
+
+# Average parameter values for instances of simultaneous observations from side-by-side loggers
+
+# for instances of simultaneous observations of two side-by-side loggers, find average
+all_data <- all_data %>%
+  group_by(Watershed,DateTime,Parameter) %>%
+  summarise(value = mean(value)) 
+  
+# create additional time descriptors
+all_data <- all_data %>%
+  mutate(day = yday(DateTime),
+         week = week(DateTime),
+         month = month(DateTime),
+         year = year(DateTime))
+
+# note: data processing steps broken down in to smaller pipelines because processing time is very slow; helps avoid computer freezing.
+
+```
+
+<br>
+
+#### Visualize extent of data availability 
+
+For each watershed and year, when was the earliest deployment and latest retrieval?
+```{r}
+#tbl
+datatable(all_data %>%
+  group_by(Watershed,year) %>%
+  summarise(min_date = min(DateTime),
+            max_date = max(DateTime)))
+
+```
+
+<br>
+
+Show temporal duration of each parameter, each drainage, each year
+```{r}
+# calculate min and max extent of water temperature logger deployments
+extent_dat <- all_data %>%
+  group_by(Watershed,year,Parameter) %>% 
+  summarize(deploy.start = min(day),
+            deploy.end = max(day),
+            days = deploy.end - deploy.start) %>%
+  transform(year = as.factor(year))
+
+#  make plot that visualizes extent of each logger deployment faceted by year and river
+
+# order facets
+extent_dat$Watershed <- factor(extent_dat$Watershed, levels = 
+                                      c("Beaver Creek", "Russian River","Ptarmigan Creek"))
+# plot
+extent_dat %>%
+   ggplot(aes(ymin = deploy.start,
+          ymax = deploy.end,
+          x = Parameter, color = Parameter)) +
+   geom_linerange(position = position_dodge(width = 1.2), size = 3) + 
+  facet_grid(Watershed ~ year) +
+  scale_y_continuous(breaks = c(122,152,182,213,244,274,304),
+                     labels = c("May","June","July","Aug","Sept", "Oct","Nov")) +
+  theme_bw() +
+   coord_flip() +
+  ggtitle("Hydrolab Deployment Periods") +
+  xlab("") +
+  ylab("") +
+  theme(strip.text.y = element_text(angle = 0, size = 14)) +
+  theme(plot.title = element_text(size= 30, face = "bold", hjust = 0.3)) +
+  theme(legend.title=element_text(size=24, face = "bold")) +
+  theme(axis.text.x = element_text(size = 14, angle = 30, hjust = 1),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14)) +
+  theme(legend.position="none")
+
+```
+
+
+<br>
+
+Show line plots by drainage for each parameter
+```{r, height = 8, width = 6}
+facet_labs <- c("Conductivity" = "Cond\n(uS/cm)",
+                "DO" = "DO\n(%)",
+                "pH" = "pH",
+                "Temp" = "Temp\n(˚C)",
+                "Turbidity" = "Turbidity\n(NTU)")
+
+
+all_data %>%
+  group_by(Watershed,Parameter,day,week,month,year)%>%
+  summarise(daily_avg = mean(value)) %>%
+  ggplot(aes(day,daily_avg, color = Watershed)) +
+  geom_point(size = 0.7) +
+  facet_grid(Parameter ~ year, scales = "free_y", labeller = labeller(Parameter = facet_labs)) +
+  xlab("") +
+  ylab("") +
+  scale_x_continuous(breaks = c(121,152,182,213,244,275,305),
+                     labels = c("May","June","July","Aug","Sept","Oct","Nov")) +
+  theme(strip.text = element_text(size = 14, face = "bold")) +
+  ggtitle("Hydrolab Data By Parameter and Watershed") 
+
+```
+
+<br>
+
+#### Table of monthly summary values
+```{r}
+dt <- all_data %>%
+  group_by(Watershed,Parameter,year,month) %>%
+  summarize(mean = mean(value, na.rm = T),
+            max = max(value, na.rm = T),
+            min = min(value, na.rm = T),
+            sd = sd(value, na.rm = T))
+
+dt %>%
+  datatable() %>%
+  formatRound(columns=c("mean","max","min","sd"), digits=2)
+```
+
+<br>
+
+Export table of final parameter values to local directory for availability at https://knb.ecoinformatics.org/
+```{r}
+write.csv(all_data, "output/FinalHydrolabData.csv")
+```
+
+
+***
+
+### Methods
+
+<br>
+
+Water quality data was collected at Russian River, Ptarmigan Creek, and Beaver Creek on the Kenai Peninsula during ice-free seasons of 2015 and 2016 using a pair of Hydrolab MS5 sondes in the lower reach of each watershed. Sondes were retrieved at ten day intervals to be downloaded and calibrated in the laboratory at Kenai Watershed Forum (KWF) in Soldotna.  KWF staff collected temperature, pH, conductivity, and turbidity data in accordance with a pre-established Quality Assurance Project Plan (QAPP). The data displayed here has been processed to ensure accuracy and organized such that it can be used for various purposes.
+
+All individual raw time series were visually examined for instances of malfunction or de-watering, and such data were removed.  
+
+For each location, temporally overlapping data were averaged when necessary, and data not meeting the QAPP accuracy requirements (on file with Kenai Watershed Forum) were omitted. These steps led to a more concise and representative final product.
+
+Site Locations:
+
+Russian River (N60° 27.180' W149° 59.206') - The Russian River site is located in the main channel of Russian River, 0.1 miles upstream of Russian River Falls, and 0.45 miles downstream of Lower Russian Lake. The site can be accessed using the Russian Lake Trail, which starts at the Russian River Campground. A campsite is situated on the right bank of the Russian River, adjacent to the outlet of Rendezvous Creek into Russian River, and 2.25 miles from the Russian Lake trailhead. The Hydrolab MS-5 probes were placed next to a large rock on the near the right bank of the river, 0.1 miles downstream of the Rendezvous Creek outlet.
+
+Beaver Creek (N60° 33.618' W151° 7.546') - The Ptarmigan Creek site is located in the main channel of Ptarmigan Creek, 0.1 miles upstream of its crossing with the Sterling Highway, and 0.5 miles upstream from its outlet at Kenai Lake. The site can be accessed using the Ptarmigan Creek campground loop, at the second established parking area. It is situated on the right bank of Ptarmigan Creek, just upstream of the public access point.
+
+Ptarmigan Creek (N60° 24.290' W149° 21.739') - The site is located in the main channel of Beaver Creek, 0.3 miles downstream of its crossing with the Kenai Spur Highway, and 2.0 miles upstream from its confluence with the Kenai River. The site is accessed using an ATV trail off of Togiak Road in Kenai.
+
+<br>
+
+Hydrolab Sonde info:
+USGS Evaluations of this probe: https://pubs.er.usgs.gov/publication/ofr20171153
+
+
